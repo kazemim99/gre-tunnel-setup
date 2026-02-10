@@ -3,6 +3,7 @@
 # ============================================================
 # TCP Tunnel Setup Script (SSH TUN Method)
 # Creates an encrypted TCP-based VPN tunnel using SSH
+# Iran acts as relay: forwards ALL ports to Kharej via tunnel
 # Works where GRE/IPIP/6in4 tunnels are blocked
 # ============================================================
 # Usage:
@@ -34,11 +35,11 @@ echo -e "${BLUE}================================================${NC}"
 echo -e "${BLUE}   TCP Tunnel Setup (SSH TUN Method)${NC}"
 echo -e "${BLUE}================================================${NC}"
 echo -e "${CYAN}  Encrypted TCP tunnel over SSH${NC}"
-echo -e "${CYAN}  Works where GRE/IPIP are blocked${NC}"
+echo -e "${CYAN}  Iran relays ALL ports to Kharej${NC}"
 echo -e "${BLUE}================================================${NC}"
 echo
 echo "Select server type:"
-echo "  1. Iran Server (Client)"
+echo "  1. Iran Server (Relay/Client)"
 echo "  2. Kharej Server (Foreign/Gateway)"
 echo "  3. Manage Tunnel (Start/Stop/Status)"
 echo "  4. Uninstall"
@@ -84,6 +85,9 @@ if [ "$MODE" == "manage" ]; then
             echo -e "${YELLOW}--- Tunnel Device ---${NC}"
             ip addr show $TUN_DEV 2>/dev/null || echo "tun device not active"
             echo
+            echo -e "${YELLOW}--- Port Forwarding (DNAT) ---${NC}"
+            iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | head -20
+            echo
             echo -e "${YELLOW}--- Route Table ---${NC}"
             ip route show 2>/dev/null | head -10
             ;;
@@ -107,6 +111,20 @@ if [ "$MODE" == "uninstall" ]; then
     rm -f /etc/systemd/system/${TUNNEL_SERVICE}.service
     systemctl daemon-reload
 
+    # Remove port forwarding rules
+    if [ -f "$TUNNEL_CONF" ]; then
+        source $TUNNEL_CONF
+        # Remove DNAT rules
+        LOCAL_IP_CONF=${LOCAL_IP:-""}
+        if [ -n "$LOCAL_IP_CONF" ]; then
+            iptables -t nat -D PREROUTING -p tcp -d $LOCAL_IP_CONF ! --dport 22 -j DNAT --to-destination $SERVER_TUN_IP 2>/dev/null
+            iptables -t nat -D PREROUTING -p udp -d $LOCAL_IP_CONF -j DNAT --to-destination $SERVER_TUN_IP 2>/dev/null
+        fi
+        iptables -t nat -D POSTROUTING -o $TUN_DEV -j MASQUERADE 2>/dev/null
+        iptables -D FORWARD -o $TUN_DEV -j ACCEPT 2>/dev/null
+        iptables -D FORWARD -i $TUN_DEV -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+    fi
+
     # Remove scripts and config
     rm -f $TUNNEL_SCRIPT
     rm -f $TUNNEL_CONF
@@ -116,6 +134,7 @@ if [ "$MODE" == "uninstall" ]; then
         SAVED_GW=$(cat /tmp/.tunnel_gateway)
         ip route replace default via $SAVED_GW 2>/dev/null
         rm -f /tmp/.tunnel_gateway
+        rm -f /tmp/.tunnel_interface
     fi
 
     # Clean up tun device
@@ -125,6 +144,7 @@ if [ "$MODE" == "uninstall" ]; then
     echo
     echo "Note: SSH key at $SSH_KEY was preserved."
     echo "Note: sshd_config changes on Kharej were preserved."
+    echo "Note: IP forwarding (sysctl) was preserved."
     exit 0
 fi
 
@@ -164,6 +184,9 @@ if [ "$MODE" == "kharej" ]; then
     echo "  Tunnel IP:    $SERVER_TUN_IP/$TUN_SUBNET"
     echo "  Client IP:    $CLIENT_TUN_IP"
     echo
+    echo -e "${CYAN}  V2Ray/Xray should be installed on this server.${NC}"
+    echo -e "${CYAN}  All ports on Iran will be forwarded here via tunnel.${NC}"
+    echo
     read -p "Proceed with setup? (y/n): " CONFIRM
     if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
         echo "Cancelled"
@@ -197,7 +220,6 @@ if [ "$MODE" == "kharej" ]; then
     # Add tunnel SSH port (keep port 22 for safety)
     if [ "$SSH_PORT" != "22" ]; then
         if ! grep -q "^Port $SSH_PORT" $SSHD_CONF; then
-            # Ensure port 22 is also listed so we don't lock ourselves out
             if ! grep -q "^Port " $SSHD_CONF; then
                 echo "Port 22" >> $SSHD_CONF
             fi
@@ -234,7 +256,7 @@ if [ "$MODE" == "kharej" ]; then
     # --- Step 4: Iptables rules ---
     echo -e "${YELLOW}[4/5] Configuring firewall rules...${NC}"
 
-    # NAT masquerade for tunnel traffic
+    # NAT masquerade for tunnel traffic going to internet
     if ! iptables -t nat -C POSTROUTING -s 10.10.0.0/${TUN_SUBNET} -o $MAIN_IF -j MASQUERADE 2>/dev/null; then
         iptables -t nat -A POSTROUTING -s 10.10.0.0/${TUN_SUBNET} -o $MAIN_IF -j MASQUERADE
     fi
@@ -262,7 +284,6 @@ if [ "$MODE" == "kharej" ]; then
         echo -e "${GREEN}  ✓ Rules saved (netfilter-persistent)${NC}"
     elif command -v iptables-save &>/dev/null; then
         iptables-save > /etc/iptables.rules
-        # Create restore-on-boot script
         mkdir -p /etc/network/if-pre-up.d
         cat > /etc/network/if-pre-up.d/iptables << 'IPTEOF'
 #!/bin/bash
@@ -287,18 +308,27 @@ IPTEOF
     echo "  Tunnel IP:  $SERVER_TUN_IP/$TUN_SUBNET"
     echo
     echo -e "${YELLOW}Next steps:${NC}"
-    echo "  1. Run this script on the Iran server (choose option 1)"
-    echo "  2. When asked, enter this server's IP: $LOCAL_IP"
-    echo "  3. When asked, enter SSH port: $SSH_PORT"
+    echo "  1. Install V2Ray/Xray on this server if not already installed"
+    echo "  2. Run this script on the Iran server (choose option 1)"
+    echo "  3. When asked, enter this server's IP: $LOCAL_IP"
+    echo "  4. When asked, enter SSH port: $SSH_PORT"
+    echo
+    echo -e "${YELLOW}V2Ray note:${NC}"
+    echo "  V2Ray/Xray should listen on 0.0.0.0 (all interfaces)"
+    echo "  so it accepts traffic coming through the tunnel."
     echo
     exit 0
 fi
 
 # ============================================================
-# IRAN (CLIENT) SERVER SETUP
+# IRAN (RELAY/CLIENT) SERVER SETUP
 # ============================================================
 if [ "$MODE" == "iran" ]; then
-    echo -e "${YELLOW}=== Iran (Client) Server Setup ===${NC}"
+    echo -e "${YELLOW}=== Iran (Relay/Client) Server Setup ===${NC}"
+    echo
+    echo -e "${CYAN}  This server will relay ALL incoming traffic${NC}"
+    echo -e "${CYAN}  to Kharej through an encrypted SSH tunnel.${NC}"
+    echo -e "${CYAN}  Users connect to this IP, traffic exits via Kharej.${NC}"
     echo
 
     read -p "Enter Kharej server IP: " REMOTE_IP
@@ -312,12 +342,18 @@ if [ "$MODE" == "iran" ]; then
 
     echo
     echo -e "${YELLOW}=== Configuration Summary ===${NC}"
-    echo "  Server Type:  Iran (Client)"
+    echo "  Server Type:  Iran (Relay)"
+    echo "  Mode:         Forward ALL ports to Kharej"
     echo "  Local IP:     $LOCAL_IP"
     echo "  Kharej IP:    $REMOTE_IP"
     echo "  SSH Port:     $SSH_PORT"
     echo "  Tunnel IP:    $CLIENT_TUN_IP/$TUN_SUBNET"
-    echo "  Gateway:      $SERVER_TUN_IP (via tunnel)"
+    echo "  Kharej TUN:   $SERVER_TUN_IP (via tunnel)"
+    echo
+    echo -e "${CYAN}  Traffic flow:${NC}"
+    echo -e "${CYAN}  User -> $LOCAL_IP:PORT -> [tunnel] -> $SERVER_TUN_IP:PORT (Kharej V2Ray)${NC}"
+    echo
+    echo -e "${YELLOW}  Port 22 (SSH) will NOT be forwarded (management access)${NC}"
     echo
     read -p "Proceed with setup? (y/n): " CONFIRM
     if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
@@ -328,7 +364,7 @@ if [ "$MODE" == "iran" ]; then
     echo
 
     # --- Step 1: Generate SSH Key ---
-    echo -e "${YELLOW}[1/7] Setting up SSH key...${NC}"
+    echo -e "${YELLOW}[1/8] Setting up SSH key...${NC}"
 
     if [ ! -f "$SSH_KEY" ]; then
         ssh-keygen -t ed25519 -f $SSH_KEY -N "" -C "tunnel-key" > /dev/null 2>&1
@@ -351,7 +387,7 @@ if [ "$MODE" == "iran" ]; then
     read -p "Press Enter after adding the key to Kharej server... "
 
     # --- Step 3: Test SSH connection ---
-    echo -e "${YELLOW}[2/7] Testing SSH connection to Kharej...${NC}"
+    echo -e "${YELLOW}[2/8] Testing SSH connection to Kharej...${NC}"
 
     SSH_TEST=$(ssh -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout=10 \
@@ -377,7 +413,7 @@ if [ "$MODE" == "iran" ]; then
     fi
 
     # --- Step 4: Check PermitTunnel on remote ---
-    echo -e "${YELLOW}[3/7] Verifying Kharej tunnel support...${NC}"
+    echo -e "${YELLOW}[3/8] Verifying Kharej tunnel support...${NC}"
 
     TUNNEL_CHECK=$(ssh -o BatchMode=yes -p $SSH_PORT -i $SSH_KEY root@$REMOTE_IP \
         "grep -c 'PermitTunnel point-to-point' /etc/ssh/sshd_config" 2>/dev/null)
@@ -391,7 +427,7 @@ if [ "$MODE" == "iran" ]; then
     fi
 
     # --- Step 5: Detect gateway ---
-    echo -e "${YELLOW}[4/7] Detecting network gateway...${NC}"
+    echo -e "${YELLOW}[4/8] Detecting network gateway...${NC}"
 
     GATEWAY=$(ip route | grep default | awk '{print $3; exit}')
     MAIN_IF=$(ip route | grep default | awk '{print $5; exit}')
@@ -408,13 +444,64 @@ if [ "$MODE" == "iran" ]; then
     fi
     echo -e "${GREEN}  ✓ Gateway: $GATEWAY (via $MAIN_IF)${NC}"
 
-    # --- Step 6: Create config and tunnel script ---
-    echo -e "${YELLOW}[5/7] Creating tunnel configuration...${NC}"
+    # --- Step 6: Enable IP forwarding + port forwarding ---
+    echo -e "${YELLOW}[5/8] Configuring port forwarding (relay mode)...${NC}"
+
+    # Enable IP forwarding
+    sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1
+    if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null; then
+        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    fi
+    echo -e "${GREEN}  ✓ IP forwarding enabled${NC}"
+
+    # DNAT: Forward all incoming TCP to Kharej (except port 22 for SSH management)
+    if ! iptables -t nat -C PREROUTING -p tcp -d $LOCAL_IP ! --dport 22 -j DNAT --to-destination $SERVER_TUN_IP 2>/dev/null; then
+        iptables -t nat -A PREROUTING -p tcp -d $LOCAL_IP ! --dport 22 -j DNAT --to-destination $SERVER_TUN_IP
+    fi
+    echo -e "${GREEN}  ✓ TCP port forwarding: all ports -> Kharej (except 22)${NC}"
+
+    # DNAT: Forward all incoming UDP to Kharej
+    if ! iptables -t nat -C PREROUTING -p udp -d $LOCAL_IP -j DNAT --to-destination $SERVER_TUN_IP 2>/dev/null; then
+        iptables -t nat -A PREROUTING -p udp -d $LOCAL_IP -j DNAT --to-destination $SERVER_TUN_IP
+    fi
+    echo -e "${GREEN}  ✓ UDP port forwarding: all ports -> Kharej${NC}"
+
+    # MASQUERADE traffic going through tunnel (so Kharej sends replies back through tunnel)
+    if ! iptables -t nat -C POSTROUTING -o $TUN_DEV -j MASQUERADE 2>/dev/null; then
+        iptables -t nat -A POSTROUTING -o $TUN_DEV -j MASQUERADE
+    fi
+
+    # Allow forwarding between main interface and tunnel
+    if ! iptables -C FORWARD -o $TUN_DEV -j ACCEPT 2>/dev/null; then
+        iptables -A FORWARD -o $TUN_DEV -j ACCEPT
+    fi
+    if ! iptables -C FORWARD -i $TUN_DEV -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+        iptables -A FORWARD -i $TUN_DEV -m state --state RELATED,ESTABLISHED -j ACCEPT
+    fi
+    echo -e "${GREEN}  ✓ NAT masquerade and forwarding rules configured${NC}"
+
+    # Save iptables
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save 2>/dev/null
+    elif command -v iptables-save &>/dev/null; then
+        iptables-save > /etc/iptables.rules
+        mkdir -p /etc/network/if-pre-up.d
+        cat > /etc/network/if-pre-up.d/iptables << 'IPTEOF'
+#!/bin/bash
+iptables-restore < /etc/iptables.rules
+IPTEOF
+        chmod +x /etc/network/if-pre-up.d/iptables
+    fi
+    echo -e "${GREEN}  ✓ Firewall rules saved${NC}"
+
+    # --- Step 7: Create config and tunnel script ---
+    echo -e "${YELLOW}[6/8] Creating tunnel configuration...${NC}"
 
     cat > $TUNNEL_CONF << CONFEOF
 # SSH Tunnel Configuration
 # Generated on $(date)
 REMOTE_IP=$REMOTE_IP
+LOCAL_IP=$LOCAL_IP
 SSH_PORT=$SSH_PORT
 SSH_KEY=$SSH_KEY
 TUN_NUM=$TUN_NUM
@@ -425,11 +512,11 @@ CONFEOF
 
     echo -e "${GREEN}  ✓ Config saved: $TUNNEL_CONF${NC}"
 
-    echo -e "${YELLOW}[6/7] Creating tunnel connection script...${NC}"
+    echo -e "${YELLOW}[7/8] Creating tunnel connection script...${NC}"
 
     cat > $TUNNEL_SCRIPT << 'SCRIPTEOF'
 #!/bin/bash
-# SSH TUN Tunnel Connection Script
+# SSH TUN Tunnel Connection Script (Relay Mode)
 # Managed by setup.sh - do not edit manually
 
 source /etc/ssh-tunnel.conf
@@ -463,7 +550,6 @@ GATEWAY=$(ip route | grep default | grep -v "$TUN_DEV" | awk '{print $3; exit}')
 MAIN_IF=$(ip route | grep default | grep -v "$TUN_DEV" | awk '{print $5; exit}')
 
 if [ -z "$GATEWAY" ]; then
-    # Try saved gateway
     if [ -f /tmp/.tunnel_gateway ]; then
         GATEWAY=$(cat /tmp/.tunnel_gateway)
         MAIN_IF=$(cat /tmp/.tunnel_interface 2>/dev/null || echo "eth0")
@@ -510,7 +596,6 @@ for i in $(seq 1 20); do
         TUN_READY=true
         break
     fi
-    # Check if SSH died
     if ! kill -0 $SSH_PID 2>/dev/null; then
         log "ERROR: SSH process died"
         exit 1
@@ -528,31 +613,44 @@ ip addr replace ${CLIENT_TUN_IP}/${TUN_SUBNET} dev $TUN_DEV
 ip link set $TUN_DEV up
 log "Tunnel device configured: $CLIENT_TUN_IP/$TUN_SUBNET"
 
+# Re-apply port forwarding rules (in case iptables was flushed on reboot)
+log "Applying port forwarding rules..."
+sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1
+
+# DNAT: forward all incoming TCP (except SSH 22) to Kharej
+if ! iptables -t nat -C PREROUTING -p tcp -d $LOCAL_IP ! --dport 22 -j DNAT --to-destination $SERVER_TUN_IP 2>/dev/null; then
+    iptables -t nat -A PREROUTING -p tcp -d $LOCAL_IP ! --dport 22 -j DNAT --to-destination $SERVER_TUN_IP
+fi
+# DNAT: forward all incoming UDP to Kharej
+if ! iptables -t nat -C PREROUTING -p udp -d $LOCAL_IP -j DNAT --to-destination $SERVER_TUN_IP 2>/dev/null; then
+    iptables -t nat -A PREROUTING -p udp -d $LOCAL_IP -j DNAT --to-destination $SERVER_TUN_IP
+fi
+# MASQUERADE outgoing tunnel traffic
+if ! iptables -t nat -C POSTROUTING -o $TUN_DEV -j MASQUERADE 2>/dev/null; then
+    iptables -t nat -A POSTROUTING -o $TUN_DEV -j MASQUERADE
+fi
+# Allow forwarding
+if ! iptables -C FORWARD -o $TUN_DEV -j ACCEPT 2>/dev/null; then
+    iptables -A FORWARD -o $TUN_DEV -j ACCEPT
+fi
+if ! iptables -C FORWARD -i $TUN_DEV -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+    iptables -A FORWARD -i $TUN_DEV -m state --state RELATED,ESTABLISHED -j ACCEPT
+fi
+log "Port forwarding rules applied"
+
 # Verify tunnel connectivity
 log "Testing tunnel connectivity..."
 if ping -c 3 -W 3 $SERVER_TUN_IP > /dev/null 2>&1; then
     log "Tunnel is UP - Kharej reachable at $SERVER_TUN_IP"
 else
-    log "WARNING: Cannot ping Kharej through tunnel (may still work for TCP)"
+    log "WARNING: Cannot ping Kharej through tunnel (TCP traffic may still work)"
 fi
-
-# Apply Iran IP routes (keep Iran traffic on local gateway)
-log "Applying Iran IP routes..."
-if curl -fsSL https://raw.githubusercontent.com/rezvanniazi/gretunnel/main/iranips.sh -o /tmp/iranips.sh 2>/dev/null; then
-    bash /tmp/iranips.sh $GATEWAY 2>/dev/null || true
-    log "Iran IP routes applied"
-else
-    log "WARNING: Could not download Iran IPs script"
-fi
-
-# Set default route through tunnel
-ip route replace default via $SERVER_TUN_IP
-log "Default route set via tunnel ($SERVER_TUN_IP)"
 
 log "========================================="
-log "  Tunnel established successfully!"
+log "  Tunnel established - Relay mode active"
 log "  Local:  $CLIENT_TUN_IP"
 log "  Remote: $SERVER_TUN_IP"
+log "  All ports -> Kharej (except SSH 22)"
 log "========================================="
 
 # Wait for SSH process - when it dies, systemd will restart us
@@ -565,12 +663,12 @@ SCRIPTEOF
     chmod +x $TUNNEL_SCRIPT
     echo -e "${GREEN}  ✓ Tunnel script created: $TUNNEL_SCRIPT${NC}"
 
-    # --- Step 7: Create systemd service ---
-    echo -e "${YELLOW}[7/7] Creating systemd service...${NC}"
+    # --- Step 8: Create systemd service ---
+    echo -e "${YELLOW}[8/8] Creating systemd service...${NC}"
 
     cat > /etc/systemd/system/${TUNNEL_SERVICE}.service << SVCEOF
 [Unit]
-Description=SSH TUN Tunnel to Kharej
+Description=SSH TUN Tunnel to Kharej (Relay Mode)
 After=network-online.target
 Wants=network-online.target
 
@@ -600,7 +698,6 @@ SVCEOF
     sleep 8
 
     # Check status
-    TUNNEL_OK=false
     if systemctl is-active --quiet $TUNNEL_SERVICE; then
         if ip link show $TUN_DEV &>/dev/null; then
             echo -e "${GREEN}  ✓ Tunnel service is running${NC}"
@@ -608,7 +705,6 @@ SVCEOF
 
             if ping -c 2 -W 3 $SERVER_TUN_IP > /dev/null 2>&1; then
                 echo -e "${GREEN}  ✓ Kharej server is reachable through tunnel${NC}"
-                TUNNEL_OK=true
             else
                 echo -e "${YELLOW}  ⚠ Ping to Kharej failed (TCP traffic may still work)${NC}"
             fi
@@ -623,14 +719,24 @@ SVCEOF
     # Done
     echo
     echo -e "${GREEN}╔════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║     Iran (Client) setup complete!                     ║${NC}"
+    echo -e "${GREEN}║     Iran (Relay) setup complete!                      ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════╝${NC}"
     echo
-    echo -e "${BLUE}Tunnel Info:${NC}"
-    echo "  This server (Iran): $CLIENT_TUN_IP"
-    echo "  Kharej server:      $SERVER_TUN_IP"
-    echo "  SSH Port:           $SSH_PORT"
+    echo -e "${BLUE}Relay Info:${NC}"
+    echo "  This server (Iran): $LOCAL_IP"
+    echo "  Kharej tunnel IP:   $SERVER_TUN_IP"
+    echo "  SSH tunnel port:    $SSH_PORT"
     echo "  Protocol:           TCP (encrypted SSH)"
+    echo
+    echo -e "${BLUE}Port Forwarding:${NC}"
+    echo "  TCP:  ALL ports forwarded to Kharej (except 22)"
+    echo "  UDP:  ALL ports forwarded to Kharej"
+    echo
+    echo -e "${YELLOW}V2Ray Configuration:${NC}"
+    echo "  In your V2Ray client, use this server address:"
+    echo "    Address: $LOCAL_IP"
+    echo "    Port:    (same port as V2Ray on Kharej)"
+    echo "  Traffic will be relayed to Kharej automatically."
     echo
     echo -e "${BLUE}Management Commands:${NC}"
     echo "  Status:   systemctl status $TUNNEL_SERVICE"
