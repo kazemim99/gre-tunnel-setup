@@ -134,26 +134,64 @@ create_dirs() {
 generate_reality_keypair() {
     log "Generating x25519 keypair for REALITY..."
     local keypair
-    keypair=$("$XRAY_BIN" x25519 2>/dev/null)
+    keypair=$("$XRAY_BIN" x25519 2>&1) || true
 
-    PRIVATE_KEY=$(echo "$keypair" | grep -i "private" | awk '{print $NF}')
-    PUBLIC_KEY=$(echo "$keypair" | grep -i "public" | awk '{print $NF}')
+    # Debug: show raw output if parsing fails
+    PRIVATE_KEY=""
+    PUBLIC_KEY=""
+
+    # Try different output formats (varies by Xray version)
+    # Format 1: "Private key: xxx" / "Public key: xxx"
+    PRIVATE_KEY=$(echo "$keypair" | grep -i "private" | awk '{print $NF}' || true)
+    PUBLIC_KEY=$(echo "$keypair" | grep -i "public" | awk '{print $NF}' || true)
+
+    # Format 2: First line = private, second line = public (no labels)
+    if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
+        local line1 line2
+        line1=$(echo "$keypair" | sed -n '1p' | tr -d '[:space:]')
+        line2=$(echo "$keypair" | sed -n '2p' | tr -d '[:space:]')
+        if [[ ${#line1} -gt 20 && ${#line2} -gt 20 ]]; then
+            PRIVATE_KEY="$line1"
+            PUBLIC_KEY="$line2"
+        fi
+    fi
 
     if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
         error "Failed to generate x25519 keypair"
+        error "Raw xray x25519 output:"
+        echo "$keypair"
+        error "Please report this output format"
         exit 1
     fi
+
+    log "Keypair generated successfully"
 }
 
 generate_uuid() {
-    UUID=$("$XRAY_BIN" uuid 2>/dev/null)
+    UUID=$("$XRAY_BIN" uuid 2>/dev/null) || true
     if [[ -z "$UUID" ]]; then
-        UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)
+        UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null) || true
     fi
+    if [[ -z "$UUID" ]]; then
+        UUID=$(uuidgen 2>/dev/null) || true
+    fi
+    if [[ -z "$UUID" ]]; then
+        error "Failed to generate UUID"
+        exit 1
+    fi
+    log "UUID generated"
 }
 
 generate_short_id() {
-    SHORT_ID=$(openssl rand -hex 8)
+    SHORT_ID=$(openssl rand -hex 8 2>/dev/null) || true
+    if [[ -z "$SHORT_ID" ]]; then
+        SHORT_ID=$(head -c 8 /dev/urandom | xxd -p 2>/dev/null) || true
+    fi
+    if [[ -z "$SHORT_ID" ]]; then
+        error "Failed to generate Short ID"
+        exit 1
+    fi
+    log "Short ID generated"
 }
 
 # ── SNI Validation ─────────────────────────────────────────────────────────
@@ -161,11 +199,18 @@ validate_sni() {
     local sni="$1"
     log "Validating SNI target: $sni ..."
 
-    local result tls13 h2
-    result=$(echo | timeout 10 openssl s_client -connect "$sni:443" -tls1_3 -alpn h2 2>/dev/null || true)
+    # Skip validation if openssl or timeout not available
+    if ! command -v openssl &>/dev/null; then
+        warn "openssl not found, skipping SNI validation"
+        return 0
+    fi
 
-    tls13=$(echo "$result" | grep -c "TLSv1.3" || true)
-    h2=$(echo "$result" | grep -c "h2" || true)
+    local result=""
+    result=$(echo "" | timeout 10 openssl s_client -connect "$sni:443" -tls1_3 -alpn h2 2>/dev/null) || true
+
+    local tls13=0 h2=0
+    tls13=$(echo "$result" | grep -c "TLSv1.3") || true
+    h2=$(echo "$result" | grep -c "h2") || true
 
     if [[ $tls13 -gt 0 && $h2 -gt 0 ]]; then
         log "$sni: TLS 1.3 + H2 supported (ideal)"
@@ -174,7 +219,7 @@ validate_sni() {
         warn "$sni: TLS 1.3 OK but no H2 (acceptable)"
         return 0
     else
-        warn "$sni: Does NOT support TLS 1.3 (not suitable for REALITY)"
+        warn "$sni: Could not verify TLS 1.3 (may still work)"
         return 1
     fi
 }
