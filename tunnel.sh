@@ -141,11 +141,21 @@ generate_reality_keypair() {
     PUBLIC_KEY=""
 
     # Try different output formats (varies by Xray version)
-    # Format 1: "Private key: xxx" / "Public key: xxx"
-    PRIVATE_KEY=$(echo "$keypair" | grep -i "private" | awk '{print $NF}' || true)
-    PUBLIC_KEY=$(echo "$keypair" | grep -i "public" | awk '{print $NF}' || true)
+    # Format 1 (v26+): "PrivateKey:xxx" / "PublicKey:xxx" (no space)
+    # Format 2 (older): "Private key: xxx" / "Public key: xxx" (with space)
+    local priv_line pub_line
+    priv_line=$(echo "$keypair" | grep -i "private" || true)
+    pub_line=$(echo "$keypair" | grep -i "public" || true)
 
-    # Format 2: First line = private, second line = public (no labels)
+    if [[ -n "$priv_line" ]]; then
+        # Try colon-separated (PrivateKey:VALUE)
+        PRIVATE_KEY=$(echo "$priv_line" | sed 's/.*[Kk]ey[: ]*//' | tr -d '[:space:]')
+    fi
+    if [[ -n "$pub_line" ]]; then
+        PUBLIC_KEY=$(echo "$pub_line" | sed 's/.*[Kk]ey[: ]*//' | tr -d '[:space:]')
+    fi
+
+    # Format 3: First line = private, second line = public (no labels)
     if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
         local line1 line2
         line1=$(echo "$keypair" | sed -n '1p' | tr -d '[:space:]')
