@@ -366,9 +366,9 @@ GEOF
 
     # Validate config
     log "Validating config..."
-    if ! "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
+    if ! "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
         error "Config validation failed:"
-        "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>&1
+        "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>&1
         exit 1
     fi
     log "Config valid"
@@ -668,9 +668,9 @@ REOF
 
     # Validate config
     log "Validating config..."
-    if ! "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
+    if ! "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
         error "Config validation failed:"
-        "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>&1
+        "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>&1
         exit 1
     fi
     log "Config valid"
@@ -1055,11 +1055,11 @@ diagnose() {
     # 1. Config validation
     echo ""
     echo -e "${BOLD}[1] Config Validation${NC}"
-    if "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
+    if "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
         log "Config: VALID"
     else
         error "Config: INVALID"
-        "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>&1 | tail -5
+        "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>&1 | tail -5
     fi
 
     # 2. Service check
@@ -1319,7 +1319,7 @@ change_fragment() {
     log "Fragment updated: length=$new_len, interval=${new_int}ms"
 
     # Validate and restart
-    if "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
+    if "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
         systemctl restart "$SERVICE_NAME"
         sleep 2
         if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -1381,7 +1381,7 @@ change_sni() {
 
     log "SNI updated: $current_sni -> $new_sni"
 
-    if "$XRAY_BIN" test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
+    if "$XRAY_BIN" run -test -config "$CONFIG_DIR/config.json" 2>/dev/null; then
         systemctl restart "$SERVICE_NAME"
         sleep 2
         if systemctl is-active --quiet "$SERVICE_NAME"; then
