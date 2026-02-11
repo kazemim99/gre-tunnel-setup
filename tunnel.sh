@@ -148,11 +148,18 @@ generate_reality_keypair() {
     pub_line=$(echo "$keypair" | grep -i "public" || true)
 
     if [[ -n "$priv_line" ]]; then
-        # Try colon-separated (PrivateKey:VALUE)
-        PRIVATE_KEY=$(echo "$priv_line" | sed 's/.*[Kk]ey[: ]*//' | tr -d '[:space:]')
+        # Strip label — handles "PrivateKey:VALUE" and "Private key: VALUE"
+        PRIVATE_KEY=$(echo "$priv_line" | awk -F'[: ]+' '{print $NF}' | tr -d '[:space:]')
+        # Fallback: strip everything before and including first colon
+        if echo "$PRIVATE_KEY" | grep -qi "key"; then
+            PRIVATE_KEY=$(echo "$priv_line" | rev | cut -d: -f1 | rev | tr -d '[:space:]')
+        fi
     fi
     if [[ -n "$pub_line" ]]; then
-        PUBLIC_KEY=$(echo "$pub_line" | sed 's/.*[Kk]ey[: ]*//' | tr -d '[:space:]')
+        PUBLIC_KEY=$(echo "$pub_line" | awk -F'[: ]+' '{print $NF}' | tr -d '[:space:]')
+        if echo "$PUBLIC_KEY" | grep -qi "key"; then
+            PUBLIC_KEY=$(echo "$pub_line" | rev | cut -d: -f1 | rev | tr -d '[:space:]')
+        fi
     fi
 
     # Format 3: First line = private, second line = public (no labels)
